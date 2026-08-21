@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "canopi"
+version         = "1.0.0"
+description     = "CANopy prObabilistic rendering and Inversion — a unified probabilistic rendering model for canopy reflectance and its derivatives"
+readme          = "README.md"
+license         = { text = "MIT" }
+requires-python = ">=3.9"
+authors         = [{ name = "Abdelaziz Kallel" }]
+keywords        = ["radiative transfer", "differentiable rendering", "canopy reflectance",
+                   "Monte Carlo", "LAI retrieval", "remote sensing", "RAMI"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Intended Audience :: Science/Research",
+]
+dependencies = [
+    "numpy>=1.21,<2.0",
+    "scipy>=1.7",
+    "matplotlib>=3.5",
+    "numba>=0.57",
+]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/canopi"
+
+[tool.setuptools.packages.find]
+include = ["canopi*"]

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Scene data (downloaded from the RAMI-5 server, not redistributed)
+data/
+JBS_treelocations/
+JBS_OP/
+
+# Generated outputs
+figures/
+*.eps
+*.pdf
+*.png
+*.pkl
+*.npz
+*.mat
+*_cache/
+*_cache.pkl
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

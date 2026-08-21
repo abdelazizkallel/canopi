@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: "CANOPI — CANopy prObabilistic rendering and Inversion"
+message: "If you use this software, please cite the accompanying paper."
+type: software
+authors:
+  - family-names: Kallel
+    given-names: Abdelaziz
+    affiliation: "Centre de Recherche en Numérique de Sfax (CRNS), Technopole de Sfax, Tunisia"
+license: MIT
+version: 1.0.0
+repository-code: "https://github.com/OWNER/canopi"
+preferred-citation:
+  type: article
+  title: "CANOPI: A Unified Probabilistic Rendering Model for Canopy Reflectance and its Derivatives — Bridging the Gap between Forward and Inverse Modeling"
+  authors:
+    - family-names: Kallel
+      given-names: Abdelaziz
+  year: 2026

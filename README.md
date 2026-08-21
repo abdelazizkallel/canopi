@@ -1,6 +1,6 @@
 # CANOPI
 
-[![CI](https://github.com/OWNER/canopi/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/canopi/actions/workflows/ci.yml)
+[![CI](https://github.com/abdelazizkallel/canopi/actions/workflows/ci.yml/badge.svg)](https://github.com/abdelazizkallel/canopi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **CAN**opy pr**O**babilistic rendering and **I**nversion — a unified probabilistic rendering
@@ -52,7 +52,7 @@ of how many parameters are retrieved** — the paper demonstrates 21 parameters 
 ## Install
 
 ```bash
-git clone https://github.com/OWNER/canopi.git
+git clone https://github.com/abdelazizkallel/canopi.git
 cd canopi
 pip install -e .
 ```

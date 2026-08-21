@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # GitHub runners have no GPU. That is the point: the package must import
+      # and the CPU tracer must work with GPU_AVAILABLE == False.
+      - name: Check the no-GPU path
+        run: |
+          python -c "
+          import canopi
+          from canopi.gpu import GPU_AVAILABLE
+          assert GPU_AVAILABLE is False, 'expected no GPU on a CI runner'
+          print('canopi', canopi.__version__, '- CPU fallback active')
+          "
+
+      - name: Test
+        run: pytest -q
+
+      # paper/ and examples/ need a GPU and hours of compute, so they cannot run
+      # here; at minimum they must stay syntactically valid.
+      - name: Byte-compile all scripts
+        run: python -m compileall -q canopi paper examples scripts tests
+
+  figure:
+    name: reproduce a paper figure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Download RAMI-5 tree locations
+        run: python scripts/download_jbs_data.py data/JBS_treelocations
+
+      # The only paper figure that runs on CPU in seconds.
+      - name: Reproduce the stand map
+        run: |
+          python paper/fig_tree_positions.py
+          test -f figures/jbs_tree_positions_18groups.pdf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jbs-stand-map
+          path: figures/

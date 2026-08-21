@@ -1,5 +1,8 @@
 # CANOPI
 
+[![CI](https://github.com/OWNER/canopi/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/canopi/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **CAN**opy pr**O**babilistic rendering and **I**nversion — a unified probabilistic rendering
 model for canopy reflectance **and its derivatives**, with an inversion engine built into the
 renderer itself.
@@ -269,6 +272,26 @@ Other worked examples:
 
 ---
 
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest -q                  # ~40 s, no GPU needed
+pytest -q -m "not slow"    # skip the end-to-end CPU render
+```
+
+The suite runs entirely on CPU and is what CI executes on every push. It covers the
+`optimal_weight` degenerate branches (where a bug once silenced the whole derivative), scene
+construction invariants, the RAMI-5 stand metadata, path resolution, and a small end-to-end CPU
+render. It also parses every script in `paper/` and `examples/` and checks that each symbol they
+import from `canopi` exists — those scripts need a GPU and hours of compute, so this is the guard
+against a refactor breaking them silently.
+
+CI additionally downloads the RAMI-5 tree locations and reproduces the stand-map figure on a
+GPU-less runner, publishing it as a build artifact.
+
+---
+
 ## Repository layout
 
 ```
@@ -285,9 +308,10 @@ canopi/            the model
   gpu.py             CUDA kernels (forward, backward, per-species derivative)
   paths.py           CANOPI_SCENE_DIR / CANOPI_FIG_DIR resolution
   scenes/            RAMI-5 JBS loaders
-paper/             one script per paper figure family
+paper/             one script per paper figure family + run_all.py
 examples/          validation and worked examples
 scripts/           data download
+tests/             CPU test suite (what CI runs)
 docs/              model notes, API notes, figure map
 ```
 

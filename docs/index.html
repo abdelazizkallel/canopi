@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CANOPI</title>
+<style>
+  :root{--bg:#EFF2ED;--fg:#141A16;--mut:#4A554C;--line:#D7DED4;--acc:#0E5C63}
+  @media (prefers-color-scheme:dark){:root{--bg:#0D1210;--fg:#E9EEE8;--mut:#A5B0A7;--line:#28322D;--acc:#5CC9CF}}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}
+  main{max-width:44rem;margin:0 auto;padding:4rem 1.5rem}
+  h1{font-size:2rem;letter-spacing:-.02em;margin:0 0 .3rem}
+  p.sub{color:var(--mut);margin:0 0 2rem}
+  a{color:var(--acc)}
+  ul{list-style:none;padding:0;display:grid;gap:.9rem}
+  li a{display:block;border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem;
+       text-decoration:none;color:inherit}
+  li a:hover{border-color:var(--acc)}
+  li b{color:var(--acc)}
+  li span{display:block;color:var(--mut);font-size:.9rem;margin-top:.15rem}
+</style></head><body><main>
+  <h1>CANOPI</h1>
+  <p class="sub">CANopy prObabilistic rendering and Inversion — canopy reflectance and its
+  derivatives from one Monte Carlo pass.</p>
+  <ul>
+    <li><a href="demo/"><b>Try the interface →</b>
+      <span>A recorded session of CANOPI Studio: three stands, BRF and derivative images, and LAI
+      retrieval running iteration by iteration. No install, no GPU.</span></a></li>
+    <li><a href="https://github.com/abdelazizkallel/canopi"><b>Source code →</b>
+      <span>The renderer, the estimators and the retrieval engine.</span></a></li>
+    <li><a href="model.md"><b>The model →</b>
+      <span>What the code computes and where each piece lives.</span></a></li>
+    <li><a href="api.md"><b>API reference →</b><span>Signatures taken from the code.</span></a></li>
+  </ul>
+</main></body></html>

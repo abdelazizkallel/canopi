@@ -14,10 +14,20 @@ Reference implementation for:
 
 ---
 
+**[▶ Try the interface in your browser](https://abdelazizkallel.github.io/canopi/demo/)** — a recorded
+session of CANOPI Studio: three stands, BRF and derivative images, and LAI retrieval running
+iteration by iteration. No install, no GPU, and the page makes no network requests.
+
 ## What the model does
 
 Most canopy radiative-transfer models return reflectance. CANOPI returns reflectance **and its
 exact Jacobian from the same Monte Carlo pass**.
+
+Leaves are **discrete disks of finite radius** everywhere in CANOPI — there is no turbid-medium
+formulation. "Homogeneous" and "heterogeneous" below describe how those disks are distributed in
+space (uniform over the slab, or grouped into crowns), not what they are made of. The finite leaf
+size is precisely what the geometric estimator `D_edg` differentiates. A turbid formulation may be
+added later.
 
 Randomness is injected at the scene level by combining two mechanisms that earlier work treated
 separately:
@@ -66,8 +76,8 @@ toolkit. Check with:
 from canopi.gpu import GPU_AVAILABLE; print(GPU_AVAILABLE)
 ```
 
-Without a GPU the pure-Python tracer (`canopi.render`) still works and is fine for homogeneous /
-turbid scenes, but the 2.5-million-leaf JBS stand is not practical on CPU. Development and all
+Without a GPU the pure-Python tracer (`canopi.render`) still works and is fine for homogeneous
+stands, but the 2.5-million-leaf JBS stand is not practical on CPU. Development and all
 published figures used an **NVIDIA A40 (46 GB)**; ~8 GB is enough for the 64×64 inversions.
 
 ---
@@ -171,25 +181,28 @@ brf, dfic, dedg, dopt, drho = render_image_bwd_deriv_species_gpu(
 | Function | Role |
 |---|---|
 | `canopi.derivative.optimal_weight(D_fic, D_edg)` | closed-form minimum-variance weight *w*; returns `w = 1` when the geometric term is degenerate (fixed leaf radius ⇒ `Var(D_edg) = 0`) |
-| `canopi.gpu.compute_deriv_gpu(...)` | hemisphere-resolved `D_fic` / `D_edg` for turbid scenes |
+| `canopi.gpu.compute_deriv_gpu(...)` | hemisphere-resolved `D_fic` / `D_edg` for homogeneous stands |
 | `canopi.gpu.compute_deriv_bwd_species_gpu(...)` | per-species derivative, backward, angularly resolved |
 
 ### Layer 3 — explicit 3-D stands (RAMI-5 JBS)
 
 | Function | Role |
 |---|---|
+| `canopi.scenes.spheres.load_sphere_scene(...)` | heterogeneous stand of spherical crowns (the paper's heterogeneous figures); needs no download |
 | `canopi.scenes.jbs_loader.load_jbs_scene(...)` | single-species JBS stand |
 | `canopi.scenes.jbs_species_loader.load_jbs_scene_groups(scene_dir, band, P_LAI, seed)` | JBS stand with 18 size-groups → 7 species; returns `(scene, wood, leaf_group_id, group_stats)` |
 | `canopi.scenes.jbs_species_loader.build_scene_for_lai(...)` | rebuild a stand at a prescribed per-species LAI |
-| `canopi.gpu.render_image_bwd_deriv_species_gpu(...)` | **the workhorse** — one pass → `(brf, dfic, dedg, dopt, drho)` |
+| `canopi.gpu.render_image_bwd_deriv_species_gpu(...)` | **the workhorse** — one pass → `(brf, dfic, dedg, dopt, drho)`; `species_shadow=True` also makes the sun-visibility ray read `P_LAI_sp` |
 | `canopi.paths.scene_dir()` / `figure_dir()` | environment-overridable path resolution |
 
 **The `P_LAI_sp` argument is the key to both validation and inversion.** Reloading the scene at a
 different `P_LAI` rescales `n_leaf ∝ 1/P_LAI` and leaves `LAI_eff = P_LAI × LAI_max` *unchanged*.
 Instead, load the geometry **once** and vary the per-species activation probability `P_LAI_sp`
-between renders. A deterministic hash on `(photon_id, leaf_id, seed)` makes the leaf sets nested, so
-the residual is exactly zero at the true parameter — which is what makes finite-difference checks
-and gradient-based retrieval meaningful.
+between renders. A deterministic hash on `(photon_id, leaf_id, seed)` makes the leaf sets nested,
+so reusing one seed across renders acts as *common random numbers*: the residual then falls to zero
+at the true parameter instead of onto a Monte Carlo floor. This is not a correctness requirement —
+a fresh seed per render converges too — but it is what keeps finite-difference checks and line
+searches reliable at a few rays per pixel, which is far cheaper than averaging the noise away.
 
 Jacobian assembly (chain rule through `P_s`):
 

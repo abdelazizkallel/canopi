@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CANOPI Studio — recorded demo</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="alert warn" style="margin-bottom:14px">
+    <span class="ic">i</span>
+    <span><b>Recorded demo.</b> Every number here came from a real run on an NVIDIA A40; the
+    buttons replay those runs instead of computing new ones, so this page needs no GPU, no
+    server and no network. Step 5 gives the script that recomputes any of it.</span>
+  </div>
+<div class="app">
+
+  <div class="titlebar">
+    <span class="name">CANOPI Studio</span>
+    <span class="path" id="tb-path">—</span>
+    <span class="right">
+      <span class="chip lock" title="One seed shared by every render: common random numbers keep successive costs comparable at a low ray count">seed <b id="tb-seed">42</b></span>
+      <span class="chip" id="tb-stand">no stand built</span>
+      <span class="chip" id="tb-device">connecting…</span>
+    </span>
+  </div>
+
+  <div class="shell">
+
+    <!-- ── rail ── -->
+    <nav class="rail" role="tablist" aria-label="Workflow">
+      <span class="lbl">Workflow</span>
+      <button class="step" role="tab" aria-selected="true" data-pane="stand">
+        <span class="num">1</span><span class="t">Stand<span class="s" id="rail-stand">not built</span></span></button>
+      <button class="step" role="tab" aria-selected="false" data-pane="optics">
+        <span class="num">2</span><span class="t">Optics &amp; light<span class="s" id="rail-optics">O08 · 41°</span></span></button>
+      <button class="step" role="tab" aria-selected="false" data-pane="render">
+        <span class="num">3</span><span class="t">Render<span class="s" id="rail-render">BRF + ∂BRF/∂LAI</span></span></button>
+      <button class="step" role="tab" aria-selected="false" data-pane="invert">
+        <span class="num">4</span><span class="t">Invert<span class="s" id="rail-invert">Gauss–Newton</span></span></button>
+      <button class="step" role="tab" aria-selected="false" data-pane="export">
+        <span class="num">5</span><span class="t">Export<span class="s">runnable script</span></span></button>
+      <div class="spacer"></div>
+      <div class="note" id="rail-note">The stand is built once and reused; changing optics never
+        rebuilds it.</div>
+    </nav>
+
+    <!-- ══ 1 · STAND ══ -->
+    <section class="pane" data-pane="stand">
+      <div class="panehead"><h2>Stand</h2><p>geometry is band-independent — built once, reused by every render</p></div>
+
+      <div class="seg" id="seg-mode" role="group" aria-label="Leaf distribution">
+        <button data-mode="homogeneous" aria-pressed="false">Homogeneous</button>
+        <button data-mode="spheres" aria-pressed="false">Spherical crowns</button>
+        <button data-mode="jbs" aria-pressed="true">RAMI-5 JBS</button>
+        <button disabled title="Not implemented — CANOPI places discrete leaf disks">Turbid · planned</button>
+      </div>
+      <p style="font-family:var(--mono); font-size:11px; color:var(--ink-3); margin:-6px 0 0">
+        Leaves are discrete disks in every case; the choice sets how they are distributed in space —
+        uniformly, grouped into spherical crowns, or grouped into the RAMI-5 tree models.</p>
+
+      <div class="cols two">
+        <div class="card">
+          <header><h4>Structure</h4><span class="sub" id="stand-src">—</span></header>
+          <div class="body" style="display:flex; flex-direction:column; gap:12px">
+            <div class="slider">
+              <div class="row"><span>P_LAI &nbsp;<span style="color:var(--ink-3)">activation probability</span></span><b id="ro-p">0.50</b></div>
+              <input type="range" id="sl-p" min="0.05" max="0.98" step="0.01" value="0.5" aria-label="P_LAI">
+            </div>
+            <div id="p-alert" class="alert info"><span class="ic">↳</span><span></span></div>
+            <div class="group" data-only="jbs">
+              <div class="field"><span class="k">month</span><select data-k="month"><option>Jul</option></select></div>
+              <div class="field"><span class="k">max_leaves</span><input type="number" data-k="max_leaves" value="1200000" step="200000" min="50000"></div>
+            </div>
+            <div class="group" data-only="spheres">
+              <div class="field"><span class="k">n_spheres</span><input type="number" data-k="n_spheres" value="15" step="1" min="1"></div>
+              <div class="field"><span class="k">r_sph [m]</span><input type="number" data-k="r_sph" value="10" step="1" min="0.5"></div>
+              <div class="field"><span class="k">LAI per crown</span><input type="number" data-k="lai_per_sphere" value="5" step="0.5" min="0.1"></div>
+              <div class="field"><span class="k">leaf_radius [m]</span><input type="number" data-k="leaf_radius" value="0.05" step="0.01" min="0.001"></div>
+              <div class="field"><span class="k">max_leaves</span><input type="number" data-k="max_leaves" value="0" step="500000" min="0" title="0 = the full published stand (6 M leaves)"></div>
+            </div>
+            <div class="group" data-only="homogeneous">
+              <div class="field"><span class="k">scene_xy [m]</span><input type="number" data-k="scene_xy" value="4" step="1" min="1"></div>
+              <div class="field"><span class="k">scene_z [m]</span><input type="number" data-k="scene_z" value="1" step="0.5" min="0.1"></div>
+              <div class="field"><span class="k">LAI_eff</span><input type="number" data-k="lai_eff" value="2" step="0.25" min="0.1"></div>
+              <div class="field"><span class="k">leaf_radius [m]</span><input type="number" data-k="leaf_radius" value="0.02" step="0.005" min="0.001"></div>
+              <div class="field"><span class="k">ALA</span><select data-k="ala"><option>UNI</option><option>PLA</option><option>ERE</option><option>SPH</option></select></div>
+            </div>
+            <div class="group">
+              <div class="field"><span class="k" title="Leaf-size spread: 0 fixes the radius, which makes D_edg degenerate">radius_std_mul</span><input type="number" data-k="radius_std_mul" value="0.3" step="0.05" min="0"></div>
+            </div>
+            <div id="stale-note" class="alert warn" hidden><span class="ic">!</span><span></span></div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+              <button class="btn" id="btn-stand">Build stand</button>
+              <div class="progress" id="pg-stand"><i></i></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:14px; min-width:0">
+          <div class="card">
+            <header><h4>Derived</h4><span class="sub" id="stand-time">—</span></header>
+            <div class="readouts">
+              <div><div class="k">LAI eff</div><div class="v" id="ro-laieff">—</div></div>
+              <div><div class="k">LAI max</div><div class="v" id="ro-laimax">—</div></div>
+              <div><div class="k">Leaves</div><div class="v" id="ro-leaves">—</div></div>
+              <div><div class="k">Extent</div><div class="v" id="ro-extent">—</div></div>
+            </div>
+          </div>
+          <div class="card" data-only="spheres">
+            <header><h4>Plan view</h4><span class="sub" id="crown-sub">—</span></header>
+            <div class="body">
+              <canvas id="cv-crowns" width="320" height="320" style="width:100%; height:auto; border-radius:4px" aria-label="Plan view of the spherical crowns"></canvas>
+              <div class="imgcap"><span>crown radius to scale</span><span>periodic in x, y</span></div>
+            </div>
+          </div>
+          <div class="card" data-only="jbs">
+            <header><h4>Species</h4><span class="sub">per-species LAI is retrievable in step 4</span></header>
+            <div class="body scrollx" style="max-height:280px; overflow-y:auto">
+              <table><thead><tr><th>Species</th><th>Leaves</th><th>LAI_max</th><th>LAI_eff</th></tr></thead>
+              <tbody id="tb-species"><tr><td colspan="4" style="text-align:center; color:var(--ink-3)">build the stand to populate</td></tr></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="card-3d">
+        <header>
+          <h4>3-D view</h4>
+          <span class="sub" id="v3-sub">build the stand to load it</span>
+        </header>
+        <div class="body" style="display:flex; flex-direction:column; gap:10px">
+          <canvas id="cv-3d" style="width:100%; height:360px; display:block; border-radius:5px; cursor:grab; touch-action:none" aria-label="3-D view of the stand"></canvas>
+          <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap">
+            <div class="seg" id="seg-3dcol" role="group" aria-label="Colour by">
+              <button data-col="group" aria-pressed="true">by group</button>
+              <button data-col="height" aria-pressed="false">by height</button>
+            </div>
+            <div class="slider" style="flex:1; min-width:150px">
+              <div class="row"><span>leaf size</span><b id="v3-size">26</b></div>
+              <input type="range" id="sl-3dsize" min="6" max="70" step="1" value="26" aria-label="point size">
+            </div>
+            <div class="slider" style="flex:1; min-width:150px">
+              <div class="row"><span>leaves drawn</span><b id="v3-n">40 k</b></div>
+              <input type="range" id="sl-3dn" min="5000" max="200000" step="5000" value="40000" aria-label="leaves drawn">
+            </div>
+            <button class="btn ghost sm" id="btn-3dreset">Reset view</button>
+          </div>
+          <p style="font-family:var(--mono); font-size:10.5px; color:var(--ink-3); margin:0">
+            drag to orbit · wheel to zoom · real leaf positions, sampled from the stand the tracer
+            uses — drawn larger than life so a 5 cm disk is visible at stand scale</p>
+        </div>
+      </div>
+      <div class="log" id="log-stand" hidden></div>
+    </section>
+
+    <!-- ══ 2 · OPTICS ══ -->
+    <section class="pane" data-pane="optics" hidden>
+      <div class="panehead"><h2>Optics &amp; light</h2><p>one stand, many bands — swapping optics never rebuilds geometry</p></div>
+      <div class="seg" id="seg-band" role="group" aria-label="Band"></div>
+      <div class="cols two">
+        <div class="card">
+          <header><h4>Leaf and soil</h4><span class="sub">ω = ρ + τ</span></header>
+          <div class="body group">
+            <div class="field"><span class="k">rho (leaf)</span><input type="number" data-k="rho" step="0.001" value="0.0632"></div>
+            <div class="field"><span class="k">tau (leaf)</span><input type="number" data-k="tau" step="0.001" value="0.0213"></div>
+            <div class="field"><span class="k">rsoil</span><input type="number" data-k="rsoil" step="0.001" value="0.0274"></div>
+            <div class="readouts" style="border:1px solid var(--line-soft); border-radius:6px; margin-top:4px">
+              <div><div class="k">albedo ω</div><div class="v" id="ro-omega">0.085</div></div>
+              <div><div class="k">band</div><div class="v" id="ro-band">O08</div></div>
+            </div>
+            <div id="omega-alert" class="alert info" hidden><span class="ic">!</span><span></span></div>
+          </div>
+        </div>
+        <div class="card">
+          <header><h4>Sun and view</h4><span class="sub" id="sun-sub">—</span></header>
+          <div class="body" style="display:grid; grid-template-columns:auto minmax(0,1fr); gap:16px; align-items:center">
+            <svg id="sun-dial" viewBox="0 0 140 140" width="140" height="140" role="img" aria-label="Sun position dial"></svg>
+            <div class="group">
+              <div class="field"><span class="k">sun_zenith_deg</span><input type="number" data-k="sun_zenith_deg" value="41" step="1"></div>
+              <div class="field"><span class="k">sun_azimuth_deg</span><input type="number" data-k="sun_azimuth_deg" value="180" step="5"></div>
+              <div class="field" data-only="jbs"><span class="k">view_zenith_deg</span><input type="number" data-k="view_zenith_deg" value="0" step="5"></div>
+              <div class="field" data-only="jbs"><span class="k">view_azimuth_deg</span><input type="number" data-k="view_azimuth_deg" value="0" step="15"></div>
+              <div class="field" data-only="homogeneous"><span class="k">obs_zenith_max_deg</span><input type="number" data-k="obs_zenith_max_deg" value="60" step="5"></div>
+              <div class="field" data-only="homogeneous"><span class="k">obs_step_deg</span><input type="number" data-k="obs_step_deg" value="5" step="1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 3 · RENDER ══ -->
+    <section class="pane" data-pane="render" hidden>
+      <div class="panehead"><h2>Render</h2><p>BRF and every derivative estimator come out of the same pass</p></div>
+      <div class="runbar">
+        <button class="btn" id="btn-render">Render</button>
+        <button class="btn ghost sm" id="btn-render-stop" hidden>Stop</button>
+        <div class="progress" id="pg-render"><i></i></div>
+        <div class="est" id="render-est">no render yet</div>
+      </div>
+      <div id="render-alert" class="alert bad" hidden><span class="ic">!</span><span></span></div>
+
+      <div class="cols two">
+        <div class="card" data-only="homogeneous,spheres">
+          <header><h4>Angular signature</h4><span class="sub">principal plane</span></header>
+          <div class="body"><svg id="sv-brf" viewBox="0 0 460 220" width="100%" role="img" aria-label="BRF and derivative against view zenith"></svg></div>
+        </div>
+        <div class="card">
+          <header><h4>Images</h4><span class="sub" id="img-sub">—</span></header>
+          <div class="body" style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
+            <div>
+              <canvas class="img" id="cv-brf" width="8" height="8" aria-label="BRF image"></canvas>
+              <div class="ramp" id="ramp-brf"></div>
+              <div class="imgcap"><span>BRF</span><span id="cap-brf">—</span></div>
+            </div>
+            <div>
+              <canvas class="img" id="cv-der" width="8" height="8" aria-label="Derivative image"></canvas>
+              <div class="ramp" id="ramp-der"></div>
+              <div class="imgcap"><span id="cap-der">∂BRF/∂P</span><span id="cap-der-rng">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <header><h4>Derivative estimator</h4><span class="sub">D_opt = w·D_fic + (1−w)·D_edg</span></header>
+        <div class="body" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap">
+          <div class="seg" id="seg-est" role="group" aria-label="Estimator">
+            <button data-est="fic" aria-pressed="false">D_fic</button>
+            <button data-est="edg" aria-pressed="false">D_edg</button>
+            <button data-est="opt" aria-pressed="true">D_opt</button>
+          </div>
+          <div class="readouts" style="flex:1; min-width:250px; border:1px solid var(--line-soft); border-radius:6px">
+            <div><div class="k">weight w</div><div class="v" id="ro-w">—</div></div>
+            <div><div class="k">mean</div><div class="v" id="ro-dmean">—</div></div>
+            <div><div class="k">seconds</div><div class="v" id="ro-secs">—</div></div>
+          </div>
+          <div id="est-note" class="alert info" style="flex-basis:100%"><span class="ic">i</span><span></span></div>
+        </div>
+      </div>
+
+      <div class="card" data-only="jbs">
+        <header><h4>Per-species sensitivity</h4><span class="sub">mean ∂BRF/∂P_s over the image</span></header>
+        <div class="body scrollx"><table><thead><tr><th>Species</th><th>D_fic</th><th>D_edg</th><th>D_opt</th></tr></thead><tbody id="tb-sens"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ══ 4 · INVERT ══ -->
+    <section class="pane" data-pane="invert" hidden>
+      <div class="panehead"><h2>Invert</h2><p>Gauss–Newton + LM · one render per iteration whatever the parameter count</p></div>
+      <div class="alert info"><span class="ic">i</span><span>The observation is rendered here from
+        the true parameters you set below — a synthetic retrieval experiment where the answer is
+        known. Same seed and rays/pixel as the forward renders, so the residual can reach zero.</span></div>
+
+      <div class="seg" id="seg-retrieve" role="group" aria-label="Parameterisation" data-only="jbs">
+        <button data-uniform="1" aria-pressed="true">Uniform LAI · 1 parameter</button>
+        <button data-uniform="0" aria-pressed="false">Per species · 7 parameters</button>
+      </div>
+      <div id="retrieve-note" class="alert info"><span class="ic">i</span><span></span></div>
+
+      <div class="card">
+        <header><h4>Retrieve</h4><span class="sub"><b id="ro-npar">1</b> free parameter(s)</span></header>
+        <div class="body scrollx">
+          <table class="matrix"><thead><tr><th>Parameter</th><th>Free</th><th>P true</th><th>P start</th><th style="text-align:right">LAI_max</th></tr></thead>
+          <tbody id="tb-free"></tbody></table>
+        </div>
+      </div>
+
+      <div class="runbar">
+        <button class="btn" id="btn-invert">Run inversion</button>
+        <button class="btn ghost sm" id="btn-invert-stop" hidden>Stop</button>
+        <div class="progress" id="pg-invert"><i></i></div>
+        <div class="est" id="invert-est">not started</div>
+      </div>
+      <div id="invert-alert" class="alert bad" hidden><span class="ic">!</span><span></span></div>
+
+      <div class="cols two">
+        <div class="card">
+          <header><h4>Convergence</h4><span class="sub">‖BRF − obs‖² · log scale</span></header>
+          <div class="body"><svg id="sv-cost" viewBox="0 0 460 190" width="100%" role="img" aria-label="Cost against iteration"></svg></div>
+        </div>
+        <div class="card">
+          <header><h4>Trace</h4><span class="sub">line search · LM damping</span></header>
+          <div class="body"><div class="log" id="log-invert">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <header><h4>Retrieved vs truth</h4><span class="sub" id="inv-secs">—</span></header>
+        <div class="body scrollx"><table><thead><tr><th>Parameter</th><th>P true</th><th>P retrieved</th><th>LAI true</th><th>LAI retrieved</th><th>Δ LAI</th><th>Status</th></tr></thead>
+        <tbody id="tb-inv"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ══ 5 · EXPORT ══ -->
+    <section class="pane" data-pane="export" hidden>
+      <div class="panehead"><h2>Export</h2><p>the session as a script that reproduces it without the interface</p></div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap">
+        <button class="btn" id="btn-script">Generate script</button>
+        <button class="btn ghost sm" id="btn-copy">Copy</button>
+        <button class="btn ghost sm" id="btn-download">Download .py</button>
+      </div>
+      <div class="card"><header><h4>canopi_session.py</h4><span class="sub" id="script-sub">—</span></header>
+        <pre class="code" id="script-out">press “Generate script”.</pre></div>
+    </section>
+
+    <!-- ── inspector ── -->
+    <aside class="inspector" aria-label="Inspector">
+      <div class="group">
+        <h3>Sampling</h3>
+        <div class="field"><span class="k" title="Ground resolution of the rendered image; 0 skips the image pass">pixel size [m]</span><input type="number" data-k="pixel_m" value="2" step="0.5" min="0"></div>
+        <div class="field"><span class="k">N_spp</span><input type="number" data-k="n_spp" value="8" min="1" step="1"></div>
+        <div class="field" data-only="homogeneous,spheres"><span class="k">n_photons</span><input type="number" data-k="n_photons" value="200000" step="50000"></div>
+        <div class="field"><span class="k">max_depth</span><input type="number" data-k="max_depth" value="99" step="1"></div>
+        <div class="field"><span class="k">seed</span><input type="number" data-k="seed" value="42" step="1"></div>
+        <div class="field" data-only="jbs"><span class="k" title="Sun-visibility rays read P_LAI_sp[species] instead of one scalar">species-aware shadow</span><input type="checkbox" id="cb-shadow" checked aria-label="species-aware shadow ray"></div>
+      </div>
+      <div class="group">
+        <h3>Inversion</h3>
+        <div class="field"><span class="k">max_iter</span><input type="number" data-k="max_iter" value="12" min="1" step="1"></div>
+        <div class="field"><span class="k">lm_lambda</span><input type="number" data-k="lm_lambda" value="0.001" step="0.001"></div>
+        <div class="field"><span class="k">k_max (2^k)</span><input type="number" data-k="k_max" value="3" min="0" step="1"></div>
+        <div class="field"><span class="k">tol max|ΔP|</span><input type="number" data-k="tol" value="0.0001" step="0.0001"></div>
+      </div>
+      <div class="group">
+        <h3>Cost</h3>
+        <div class="log" id="cost-note" style="max-height:none">—</div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+<footer><span id="foot-left">CANOPI Studio · local</span><span id="foot-right">—</span></footer>
+</div>
+<script src="demo-data.js"></script>
+<script src="demo.js"></script>
+<script src="view3d.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

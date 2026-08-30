@@ -9,8 +9,10 @@ renderer itself.
 
 Reference implementation for:
 
-> A. Kallel, *CANOPI: A Unified Probabilistic Rendering Model for Canopy Reflectance and its
-> Derivatives — Bridging the Gap between Forward and Inverse Modeling* (2026).
+> Kallel, Abdelaziz, *CANOPI: A Unified Probabilistic Rendering Model for Canopy Reflectance
+> and its Derivatives — Bridging the Gap between Forward and Inverse Modeling*
+> (August 27, 2026). SSRN: <https://ssrn.com/abstract=7365079> ·
+> doi:[10.2139/ssrn.7365079](https://doi.org/10.2139/ssrn.7365079)
 
 ---
 
@@ -332,7 +334,27 @@ docs/              model notes, API notes, figure map
 
 ## Citation
 
-If you use CANOPI, please cite the paper (see `CITATION.cff`).
+If you use CANOPI, please cite the paper:
+
+> Kallel, Abdelaziz, Canopi: A Unified Probabilistic Rendering Model for Canopy Reflectance and
+> its Derivatives-Bridging the Gap between Forward and Inverse Modeling (August 27, 2026).
+> Available at SSRN: <https://ssrn.com/abstract=7365079> or
+> <http://dx.doi.org/10.2139/ssrn.7365079>
+
+```bibtex
+@article{kallel2026canopi,
+  author  = {Kallel, Abdelaziz},
+  title   = {{CANOPI}: A Unified Probabilistic Rendering Model for Canopy Reflectance and its
+             Derivatives---Bridging the Gap between Forward and Inverse Modeling},
+  journal = {SSRN Electronic Journal},
+  year    = {2026},
+  month   = aug,
+  doi     = {10.2139/ssrn.7365079},
+  url     = {https://ssrn.com/abstract=7365079}
+}
+```
+
+Machine-readable metadata is in [`CITATION.cff`](CITATION.cff).
 
 ## License
 

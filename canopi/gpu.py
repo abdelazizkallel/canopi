@@ -538,6 +538,31 @@ if GPU_AVAILABLE:
             cur_i = ni;  cur_j = nj;  cur_k = nk
             accumulated_t += t_min
 
+
+        # Trim the fictive and edge sets to what lies before the hit, on EVERY
+        # exit -- as the CPU tracer does (canopi/intersection.py).  The in-loop
+        # trim runs only when the next step passes the hit, but a hit in the top
+        # (bottom) voxel layer of an upward (downward) ray leaves the grid on that
+        # step and breaks out first.  Leaves are visited in list order, so a
+        # fictive leaf beyond the hit may already be recorded; left in the set it
+        # is charged -1/(1-P) at every later vertex and dBRF/dLAI reads low.
+        if contact:
+            n_out = 0
+            for k in range(n_edg[0]):
+                if edg_ohs[k] < min_dis:
+                    edg_ids[n_out] = edg_ids[k]
+                    edg_nvs[n_out] = edg_nvs[k]
+                    edg_ohs[n_out] = edg_ohs[k]
+                    n_out += 1
+            n_edg[0] = n_out
+            n_out = 0
+            for k in range(n_fic[0]):
+                if fic_ohs[k] < min_dis:
+                    fic_ids[n_out] = fic_ids[k]
+                    fic_nvs[n_out] = fic_nvs[k]
+                    fic_ohs[n_out] = fic_ohs[k]
+                    n_out += 1
+            n_fic[0] = n_out
         return contact
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -668,6 +693,31 @@ if GPU_AVAILABLE:
             cur_i = ni;  cur_j = nj;  cur_k = nk
             accumulated_t += t_min
 
+
+        # Trim the fictive and edge sets to what lies before the hit, on EVERY
+        # exit -- as the CPU tracer does (canopi/intersection.py).  The in-loop
+        # trim runs only when the next step passes the hit, but a hit in the top
+        # (bottom) voxel layer of an upward (downward) ray leaves the grid on that
+        # step and breaks out first.  Leaves are visited in list order, so a
+        # fictive leaf beyond the hit may already be recorded; left in the set it
+        # is charged -1/(1-P) at every later vertex and dBRF/dLAI reads low.
+        if contact:
+            n_out = 0
+            for k in range(n_edg[0]):
+                if edg_ohs[k] < min_dis:
+                    edg_ids[n_out] = edg_ids[k]
+                    edg_nvs[n_out] = edg_nvs[k]
+                    edg_ohs[n_out] = edg_ohs[k]
+                    n_out += 1
+            n_edg[0] = n_out
+            n_out = 0
+            for k in range(n_fic[0]):
+                if fic_ohs[k] < min_dis:
+                    fic_ids[n_out] = fic_ids[k]
+                    fic_nvs[n_out] = fic_nvs[k]
+                    fic_ohs[n_out] = fic_ohs[k]
+                    n_out += 1
+            n_fic[0] = n_out
         return contact
 
     # ─────────────────────────────────────────────────────────────────────────

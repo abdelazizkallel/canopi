@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name            = "canopi"
-version         = "1.0.0"
+version         = "1.0.1"
 description     = "CANopy prObabilistic rendering and Inversion — a unified probabilistic rendering model for canopy reflectance and its derivatives"
 readme          = "README.md"
 license         = { text = "MIT" }

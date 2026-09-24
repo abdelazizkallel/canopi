@@ -20,7 +20,7 @@ docs/figures.md to reproduce the paper figures.
 from .config import SceneConfig
 from .renderer import render, render_backward_image, render_backward_image_deriv, RenderResult
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __all__ = ['SceneConfig', 'render', 'render_backward_image',
            'render_backward_image_deriv', 'RenderResult', '__version__']

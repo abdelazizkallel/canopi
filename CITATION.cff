@@ -7,7 +7,8 @@ authors:
     given-names: Abdelaziz
     affiliation: "Centre de Recherche en Numérique de Sfax (CRNS), Technopole de Sfax, Tunisia"
 license: MIT
-version: 1.0.0
+version: 1.0.1
+date-released: "2026-09-24"
 repository-code: "https://github.com/abdelazizkallel/canopi"
 preferred-citation:
   type: article

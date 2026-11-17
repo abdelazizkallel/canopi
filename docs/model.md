@@ -5,6 +5,9 @@ Full derivations are in the paper; this document maps them onto modules.
 
 ## 1. Probabilistic scene
 
+Leaves are discrete disks of finite radius; CANOPI has no turbid-medium formulation, and
+*homogeneous* / *heterogeneous* below refer only to how those disks are distributed in space.
+
 A canopy realisation is drawn by combining two independent sources of randomness:
 
 - **Structural** — every leaf is *active* with probability `P_LAI` (Bernoulli thinning).
@@ -80,12 +83,32 @@ retrieval.
 
 Instead: load the geometry **once** at the true `P_LAI`, then vary the per-species activation
 probability `P_LAI_sp` between renders. Leaf activation uses a deterministic hash of
-`(photon_id, leaf_id, seed)`, so the active leaf sets are *nested* as `P` increases. With the same
-seed and `N_spp` for the observation and the forward renders, the residual is **exactly zero** at
-the true parameter — no Monte Carlo floor.
+`(photon_id, leaf_id, seed)`, so the active leaf sets are *nested* as `P` increases. Reusing the
+same seed and `N_spp` for the observation and the forward renders is a *common random numbers*
+variance reduction: the residual then falls to **exactly zero** at the true parameter rather than
+onto a Monte Carlo floor. It is a convenience rather than a requirement — a fresh seed per render
+converges as well, but needs far more rays per pixel to get there, because the cost differences the
+line search compares would otherwise sit below the sampling noise.
 
 `P_LAI_sp` is an optional argument of `render_image_bwd_deriv_species_gpu` and defaults to a
 uniform `P_LAI`, so existing calls are unaffected.
+
+### The shadow ray and `P_LAI_sp`
+
+Leaf activation along the **camera path** reads `P_LAI_sp[species]`. The **sun-visibility ray**
+(`_nee_deriv`) historically blocks on the scalar `scene.P_LAI` instead, which has two consequences.
+
+*Uniform change.* Vary only `P_LAI_sp` and the shadow rays stay at the old LAI, so a
+finite-difference check comes out with the wrong sign (a factor of −1.3 at LAI_max ≈ 1.7, −3.7 at
+16.8 on the JBS stand). Set `scene.P_LAI` to the same value and analytic and central differences
+agree to ~1.5 % (ratios 1.015 and 0.955). `jbs_fd_check.py` does this; do it in your own scripts too.
+
+*Per-species change.* One scalar cannot stand for several probabilities, so the model's response to
+a single species is only partly described by that species' Jacobian column, and Gauss–Newton stalls
+after one step. Passing `species_shadow=True` (or setting `CANOPI_SPECIES_SHADOW=1`) makes the
+shadow ray read `P_LAI_sp[species]` as well, through `_nee_deriv_sp`. Central differences then match
+the analytic columns (BEPE ratio 1.019), and a 7-species retrieval converges. The default is
+`False`, which reproduces the historical behaviour exactly.
 
 ## 5. Inversion
 

@@ -7,7 +7,8 @@ entry points; everything else is imported from its submodule.
 
 ### `SceneConfig`
 
-Dataclass holding the complete description of a homogeneous / turbid scene and its sampling.
+Dataclass holding the complete description of a homogeneous stand of discrete leaf disks, and
+its sampling.
 
 | Group | Fields |
 |---|---|

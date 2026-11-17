@@ -1,7 +1,7 @@
 """
 quickstart.py — smallest useful CANOPI run.
 
-Renders a homogeneous (turbid) canopy over the viewing hemisphere and returns
+Renders a homogeneous canopy of discrete leaf disks over the viewing hemisphere and returns
 the BRF together with the three derivative estimators, from a single pass.
 
     python examples/quickstart.py                 # GPU if available, else CPU

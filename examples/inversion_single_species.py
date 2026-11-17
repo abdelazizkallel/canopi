@@ -109,6 +109,8 @@ print(f'  BEPE true: P_LAI_BEPE={P_LAI_TRUE:.4f}  '
 
 # ── Golden Section Search on P_LAI_BEPE ─────────────────────────────────────
 # With same seed + same N_spp: f(P_bepe=P_true) = 0 exactly (deterministic).
+# The shared seed is a variance reduction, not a requirement: it keeps the cost
+# comparable between evaluations at a low ray count.
 # The cost function is 1D and unimodal. GSS finds minimum in O(log(1/eps)) evals.
 # At each step we evaluate f at two interior points and shrink the bracket.
 

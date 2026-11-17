@@ -205,7 +205,8 @@ def compute_photon_derivative(
             v_nc_all, nv_nc_all = merge_unique_min(
                 v_nc_all, nv_nc_all, v_edg_obs_no_cont, nv_edg_obs_no_cont)
 
-            v_ec_all, nv_ec_all = merge_unique_max(
+            # d_l^B = min over all segments (Eq. 28), as for B\H
+            v_ec_all, nv_ec_all = merge_unique_min(
                 v_edg_cont, nv_edg_cont, v_edg_obs_cont, nv_edg_obs_cont)
 
             # ── Build the three disjoint sets ─────────────────────────────

@@ -47,6 +47,7 @@ Usage example
     result = render_gpu(cfg) if GPU_AVAILABLE else render(cfg)
 """
 import gc
+import os
 import numpy as np
 import math
 
@@ -74,6 +75,13 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 _MAX_C   = 60    # max real-leaf contacts tracked per photon  (H set)
 _MAX_FIC = 200   # max fictive / edge leaves per set
+# Sun-visibility (shadow) rays historically block on the SCALAR scene.P_LAI, which
+# makes the forward model species-blind: a per-species LAI change is felt by the
+# camera path but not by the shadow ray, so a per-species Jacobian column does not
+# describe the model's actual response. Set CANOPI_SPECIES_SHADOW=1 (or pass
+# species_shadow=True) to make the shadow ray read P_LAI_sp[species] as well.
+_SPECIES_SHADOW = os.environ.get("CANOPI_SPECIES_SHADOW", "0") not in ("0", "", "false", "False")
+
 _N_SP    = 18    # number of JBS size-class groups (ACPL, BEPE1-4, ALGL1-4, FREX, TICO1-5, PIAB, POTR1-2)
 
 
@@ -856,6 +864,150 @@ if GPU_AVAILABLE:
         return visible
 
     # ─────────────────────────────────────────────────────────────────────────
+    # _nee_deriv_sp — as _nee_deriv, but the blocking test can be species-aware
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @cuda.jit(device=True)
+    def _nee_deriv_sp(
+        Hx, Hy, Hz, ox, oy, oz, origin,
+        leaf_px, leaf_py, leaf_pz,
+        leaf_nx, leaf_ny, leaf_nz,
+        leaf_radius, photon_id, global_seed, P_LAI,
+        leaf_species_arr, P_LAI_sp_arr, species_shadow,
+        voxel_count, voxel_leaves, vs, mvx, mvy, mvz, periodic_xy,
+        nee_fic_ids, nee_fic_nvs, n_nfic,
+        nee_edg_ids, nee_edg_nvs, n_nedg,
+        edge_r_thresh,
+        LAI_r, std_LAI, use_lognormal, sigma_ln, # per-photon radius distribution params
+    ):
+        """
+        NEE ray from (Hx,Hy,Hz) toward obs direction (ox,oy,oz).
+        Returns True if unblocked (visible).
+        Also populates nee_fic_* / nee_edg_* for derivative bookkeeping.
+        Both counters are reset to 0 on entry.
+        Uses per-photon radius via _leaf_radius_draw() for consistency with
+        the derivative formula's q_j = P(r > nv).
+        
+        Species-aware variant of _nee_deriv: when species_shadow is non-zero the
+        blocking test uses P_LAI_sp_arr[species] instead of the scalar P_LAI, so a
+        per-species LAI change is felt by the shadow ray as well as the camera path.
+        With species_shadow = 0 it is identical to _nee_deriv.
+        """
+        visible = True
+        Lx = mvx * vs;  Ly = mvy * vs
+        EPS = 1e-8
+
+        if periodic_xy:
+            _Px = Hx % Lx
+            if _Px < 0.0: _Px += Lx
+            _Py = Hy % Ly
+            if _Py < 0.0: _Py += Ly
+        else:
+            _Px = min(max(Hx, 0.0), Lx - EPS)
+            _Py = min(max(Hy, 0.0), Ly - EPS)
+        _Pz = min(max(Hz, -vs * mvz + EPS), -EPS)
+
+        cur_i  = min(int(_Px / vs), mvx - 1)
+        cur_j  = min(int(_Py / vs), mvy - 1)
+        cur_k  = min(int(math.fabs(_Pz) / vs), mvz - 1)
+        cur_px = _Px;  cur_py = _Py;  cur_pz = _Pz
+        max_steps = (mvx + mvy + mvz) * 4 + 20
+
+        n_nfic[0] = 0;  n_nedg[0] = 0
+
+        for _s in range(max_steps):
+            vox = cur_i + cur_j * mvx + cur_k * mvx * mvy
+            for k in range(voxel_count[vox]):
+                i = voxel_leaves[vox, k]
+                if i == origin:
+                    continue
+                ptx = leaf_px[i] - cur_px
+                pty = leaf_py[i] - cur_py
+                ptz = leaf_pz[i] - cur_pz
+                # if periodic_xy:
+                #     if ptx >  Lx * 0.5: ptx -= Lx
+                #     if ptx < -Lx * 0.5: ptx += Lx
+                #     if pty >  Ly * 0.5: pty -= Ly
+                #     if pty < -Ly * 0.5: pty += Ly
+                den = ox*leaf_nx[i] + oy*leaf_ny[i] + oz*leaf_nz[i]
+                if math.fabs(den) < 1e-12:
+                    continue
+                OH = (ptx*leaf_nx[i] + pty*leaf_ny[i] + ptz*leaf_nz[i]) / den
+                if OH < 0.0:
+                    continue
+                MHx2 = -ptx + OH*ox;  MHy2 = -pty + OH*oy;  MHz2 = -ptz + OH*oz
+                nv = math.sqrt(MHx2*MHx2 + MHy2*MHy2 + MHz2*MHz2)
+
+                if use_lognormal:
+                    r_i = _leaf_radius_draw_ln(photon_id, i, global_seed, LAI_r, sigma_ln)
+                else:
+                    r_i = _leaf_radius_draw(photon_id, i, global_seed, LAI_r, std_LAI)
+
+                if nv < r_i:
+                    p_blk = P_LAI
+                    if species_shadow:
+                        p_blk = P_LAI_sp_arr[leaf_species_arr[i]]
+                    if _leaf_real(photon_id, i, global_seed, p_blk):   # blocked
+                        visible = False
+                        break
+                    else:                                              # fictive
+                        if _find_id(nee_fic_ids, n_nfic[0], i) < 0 and n_nfic[0] < _MAX_FIC:
+                            nee_fic_ids[n_nfic[0]] = i
+                            nee_fic_nvs[n_nfic[0]] = nv
+                            n_nfic[0] += 1
+                elif nv < edge_r_thresh:                    # edge
+                    if _find_id(nee_edg_ids, n_nedg[0], i) < 0 and n_nedg[0] < _MAX_FIC:
+                        nee_edg_ids[n_nedg[0]] = i
+                        nee_edg_nvs[n_nedg[0]] = nv
+                        n_nedg[0] += 1
+
+            if not visible:
+                break
+
+            t_min = 1e18;  step_axis = 0
+            ni = cur_i;  nj = cur_j;  nk = cur_k
+            if math.fabs(ox) > 1e-12:
+                ex = 1 if ox > 0 else -1
+                tx = math.fabs((cur_i + (1 if ex > 0 else 0))*vs - cur_px) / math.fabs(ox)
+                if tx < 1e-8: tx = math.fabs((cur_i + (1 if ex > 0 else 0) + ex)*vs - cur_px) / math.fabs(ox)
+                if tx > 1e-8 and tx < t_min: t_min = tx; step_axis = 1; ni = cur_i + ex; nj = cur_j; nk = cur_k
+            if math.fabs(oy) > 1e-12:
+                ey = 1 if oy > 0 else -1
+                ty = math.fabs((cur_j + (1 if ey > 0 else 0))*vs - cur_py) / math.fabs(oy)
+                if ty < 1e-8: ty = math.fabs((cur_j + (1 if ey > 0 else 0) + ey)*vs - cur_py) / math.fabs(oy)
+                if ty > 1e-8 and ty < t_min: t_min = ty; step_axis = 2; ni = cur_i; nj = cur_j + ey; nk = cur_k
+            if math.fabs(oz) > 1e-12:
+                ez = -1 if oz > 0 else 1
+                tz = math.fabs((cur_k + (1 if ez > 0 else 0))*vs - math.fabs(cur_pz)) / math.fabs(oz)
+                if tz < 1e-8: tz = math.fabs((cur_k + (1 if ez > 0 else 0) + ez)*vs - math.fabs(cur_pz)) / math.fabs(oz)
+                if tz > 1e-8 and tz < t_min: t_min = tz; step_axis = 3; ni = cur_i; nj = cur_j; nk = cur_k + ez
+            if nk < 0 or nk >= mvz:
+                break
+            if periodic_xy:
+                if ni < 0: ni += mvx
+                elif ni >= mvx: ni -= mvx
+                if nj < 0: nj += mvy
+                elif nj >= mvy: nj -= mvy
+            else:
+                if ni < 0 or ni >= mvx or nj < 0 or nj >= mvy:
+                    break
+            cur_px += t_min*ox;  cur_py += t_min*oy;  cur_pz += t_min*oz
+            if ox > 1e-12: cur_px += 1e-8
+            elif ox < -1e-12: cur_px -= 1e-8
+            if oy > 1e-12: cur_py += 1e-8
+            elif oy < -1e-12: cur_py -= 1e-8
+            if oz > 1e-12: cur_pz += 1e-8
+            elif oz < -1e-12: cur_pz -= 1e-8
+            if periodic_xy:
+                cur_px = cur_px % Lx
+                if cur_px < 0.0: cur_px += Lx
+                cur_py = cur_py % Ly
+                if cur_py < 0.0: cur_py += Ly
+            cur_i = ni;  cur_j = nj;  cur_k = nk
+
+        return visible
+
+    # ─────────────────────────────────────────────────────────────────────────
     # _trace_kernel — BRF only  (original, unchanged)
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1220,7 +1372,7 @@ if GPU_AVAILABLE:
                         vid = fwd_edg_ids[k];  nv_B = fwd_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_now, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1235,7 +1387,7 @@ if GPU_AVAILABLE:
                         vid = nee_edg_ids[k];  nv_B = nee_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_now, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1378,7 +1530,7 @@ if GPU_AVAILABLE:
                         vid = fwd_edg_ids[k];  nv_B = fwd_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_soil, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1393,7 +1545,7 @@ if GPU_AVAILABLE:
                         vid = nee_edg_ids[k];  nv_B = nee_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_soil, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1778,7 +1930,7 @@ if GPU_AVAILABLE:
                         vid = fwd_edg_ids[k];  nv_B = fwd_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_now, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1793,7 +1945,7 @@ if GPU_AVAILABLE:
                         vid = nee_edg_ids[k];  nv_B = nee_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_now, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1915,7 +2067,7 @@ if GPU_AVAILABLE:
                         vid = fwd_edg_ids[k];  nv_B = fwd_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_soil, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -1930,7 +2082,7 @@ if GPU_AVAILABLE:
                         vid = nee_edg_ids[k];  nv_B = nee_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_soil, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -2014,11 +2166,14 @@ if GPU_AVAILABLE:
         n_leaf_norm_sp,     # (_N_SP,)     float64  per-species
         P_LAI_sp,           # (_N_SP,)     float64  per-species activation prob
         rho_sp_arr,         # (_N_SP,)     float64  per-species leaf rho (= tau, symmetric)
+        species_shadow,     # int  1: the shadow ray uses P_LAI_sp too
     ):
         """Backward tracer: BRF + per-species dBRF/dLAI + dBRF/drho.
         P_LAI_sp[s] controls the activation probability for species s leaves.
         Pass np.full(_N_SP, P_LAI) for the standard uniform-P case.
-        rho_sp_arr[s] is the leaf reflectance for species s; tau_s = rho_s (symmetric)."""
+        rho_sp_arr[s] is the leaf reflectance for species s; tau_s = rho_s (symmetric).
+        species_shadow = 1 makes the sun-visibility test species-aware as well; 0 keeps
+        the historical behaviour, where the shadow ray blocks on the scalar P_LAI."""
         n = cuda.grid(1)
         N = lum_col.shape[0]
         if n >= N:
@@ -2154,11 +2309,12 @@ if GPU_AVAILABLE:
                 f        = rho_sp_arr[leaf_species[li]] / 3.14159265  # rho=tau, same for reflect/transmit
                 norm_fac = math.fabs(cos_out) / cos_earth_sun
 
-                visible = _nee_deriv(
+                visible = _nee_deriv_sp(
                     Hx, Hy, Hz, nex, ney, nez, li,
                     leaf_px, leaf_py, leaf_pz,
                     leaf_nx, leaf_ny, leaf_nz,
                     leaf_radius, n, global_seed, P_LAI,
+                    leaf_species, P_LAI_sp, species_shadow,
                     voxel_count, voxel_leaves, vs, mvx, mvy, mvz, periodic_xy,
                     nee_fic_ids, nee_fic_nvs, n_nfic,
                     nee_edg_ids, nee_edg_nvs, n_nedg,
@@ -2195,7 +2351,7 @@ if GPU_AVAILABLE:
                         vid = fwd_edg_ids[k];  nv_B = fwd_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_now, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -2210,7 +2366,7 @@ if GPU_AVAILABLE:
                         vid = nee_edg_ids[k];  nv_B = nee_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_now, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -2316,11 +2472,12 @@ if GPU_AVAILABLE:
                 soil_Pz = z_bottom + 1e-7
                 n_H_soil = n_H[0]
 
-                visible = _nee_deriv(
+                visible = _nee_deriv_sp(
                     soil_Px, soil_Py, soil_Pz, nex, ney, nez, -1,
                     leaf_px, leaf_py, leaf_pz,
                     leaf_nx, leaf_ny, leaf_nz,
                     leaf_radius, n, global_seed, P_LAI,
+                    leaf_species, P_LAI_sp, species_shadow,
                     voxel_count, voxel_leaves, vs, mvx, mvy, mvz, periodic_xy,
                     nee_fic_ids, nee_fic_nvs, n_nfic,
                     nee_edg_ids, nee_edg_nvs, n_nedg,
@@ -2355,7 +2512,7 @@ if GPU_AVAILABLE:
                         vid = fwd_edg_ids[k];  nv_B = fwd_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_soil, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -2370,7 +2527,7 @@ if GPU_AVAILABLE:
                         vid = nee_edg_ids[k];  nv_B = nee_edg_nvs[k]
                         h_ci = _find_id(H_ids, n_H_soil, vid)
                         if h_ci >= 0:
-                            if nv_B > HB_nv_B[h_ci]:
+                            if HB_in_B[h_ci] == 0 or nv_B < HB_nv_B[h_ci]:  # d_l^B = min (Eq. 28)
                                 HB_nv_B[h_ci] = nv_B;  HB_in_B[h_ci] = 1
                         else:
                             bi = _find_id(bnH_edg_ids, n_bnH, vid)
@@ -3384,6 +3541,7 @@ def render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
                                         img_H=64, img_W=64, N_spp=4,
                                         max_depth=99, threads_per_block=128, seed=42,
                                         P_LAI_sp=None, rho_sp_arr=None,
+                                        species_shadow=None,
                                         _scene_gpu=None, _rng_states=None):
     """
     Render BRF + per-species dBRF/dLAI_s images (backward ray tracing, GPU).
@@ -3477,6 +3635,7 @@ def render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
         d_lsp, d_lai_sp, d_nln_sp,
         d_p_lai_sp,
         d_rho_sp_arr,
+        int(bool(_SPECIES_SHADOW if species_shadow is None else species_shadow)),
     )
     cuda.synchronize()
 

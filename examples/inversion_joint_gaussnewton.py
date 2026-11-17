@@ -12,8 +12,9 @@ Algorithm: joint Gauss-Newton + exponential line search
          Δ(LAI_eff) = -(J^T J + λ diag(J^T J))^{-1} J^T r    (N_SP vector)
          ΔP[s]      = Δ(LAI_eff[s]) / LAI_Max_sp[s]           (convert to P space)
     5. Exponential line search (k = k_max → 0): try amp = 2^k × ΔP
-       Accept the LARGEST amp that reduces ||BRF(P+ΔP) - I_obs||²  (deterministic,
-       same seed guarantees exact cost comparison).
+       Accept the LARGEST amp that reduces ||BRF(P+ΔP) - I_obs||².  Costs are
+       compared under common random numbers (same seed), so the difference
+       reflects the step and not the sampling noise.
     6. Update all P_sp and repeat.
 
 One render per iteration (+ k_max+1 cost renders during line search).
@@ -21,6 +22,8 @@ Far fewer renders than coordinate-descent GSS which needed
 N_species × n_gss renders per cycle.
 
 With same seed + same N_spp: f(P_sp = P_true) = 0 exactly (deterministic zero).
+Reusing the seed is not needed for correctness — it is what lets the line search
+converge at a handful of rays per pixel instead of averaging the noise away.
 The concave BRF(LAI) makes the GN step undershoot → amplification > 1 is typical.
 """
 import sys, os, time, argparse, gc
@@ -45,7 +48,7 @@ parser.add_argument('--month',      default='Jul')
 parser.add_argument('--max-leaves', type=int,   default=None)
 parser.add_argument('--img-size',   type=int,   default=64)
 parser.add_argument('--n-spp',      type=int,   default=8,
-    help='Samples/pixel — SAME for obs and forward (required for deterministic cost)')
+    help='Samples/pixel — same for obs and forward, so costs stay comparable at a low ray count')
 parser.add_argument('--max-iter',   type=int,   default=20)
 parser.add_argument('--p-lai',      type=float, default=0.5,
     help='True P_LAI for all species')

@@ -67,7 +67,8 @@ def load_jbs_scene_species(
     month: str = "Jul",
     P_LAI: float = 0.5,
     leaf_radius_std_mul: float = 0.5,
-    voxel_size: float = VOXEL_SIZE,
+    voxel_size: Optional[float] = None,
+    exact_geometry: bool = True,
     seed:  int = 42,
     max_leaves: Optional[int] = None,
     verbose: bool = True,
@@ -99,7 +100,7 @@ def load_jbs_scene_species(
     leaf_pools      : dict (only when return_pools=True)
         {s: {'pos': ndarray(N_s,3), 'nrm': ndarray(N_s,3)}} pre-over-pop leaves
     """
-    from canopi.scene import Scene, _assign_leaves_fast
+    from canopi.scene import Scene, _assign_leaves_fast, scene_voxel_grid, assign_leaves
 
     rng = np.random.default_rng(seed)
     from canopi.scenes.jbs_loader import get_band_params as _get_band_params, ILLUMINATION as _ILLUM
@@ -154,11 +155,11 @@ def load_jbs_scene_species(
 
         w_pos, w_nrm = _apply_tree_transform(loc_pos, loc_nrm, inst)
 
-        # Wrap x/y; flip z to canopi convention
+        # Wrap x/y; shift z to the canopi convention (soil at -H)
         w_pos[:, 0] %= LX
         w_pos[:, 1] %= LY
         w_pos[:, 2] = np.clip(w_pos[:, 2], 0.0, H)
-        w_pos[:, 2] = -w_pos[:, 2]
+        w_pos[:, 2] = w_pos[:, 2] - H  # height above soil -> z = h - H (soil at -H, sky at 0); was -h, which turned the stand upside down
 
         all_pos.append(w_pos)
         all_nrm.append(w_nrm)
@@ -184,7 +185,7 @@ def load_jbs_scene_species(
             w_vtx[:, 0] %= LX
             w_vtx[:, 1] %= LY
             w_vtx[:, 2] = np.clip(w_vtx[:, 2], 0.0, H)
-            w_vtx[:, 2] = -w_vtx[:, 2]
+            w_vtx[:, 2] = w_vtx[:, 2] - H
             all_vtx.append(w_vtx)
             all_fcs.append(loc_fcs + vtx_offset)
             all_fsp.append(np.full(len(loc_fcs), inst.species, dtype=object))
@@ -267,14 +268,14 @@ def load_jbs_scene_species(
 
     # ── 5. Voxel grid ──────────────────────────────────────────────────────
     pos_max   = np.array([LX, LY, -H], dtype=np.float64)
-    max_voxel = np.maximum((np.abs(pos_max) / voxel_size).astype(int), 1)
+    voxel_size, max_voxel = scene_voxel_grid(pos_max, voxel_size, exact_geometry, VOXEL_SIZE)
     n_vox     = int(max_voxel[0] * max_voxel[1] * max_voxel[2])
 
     if verbose:
         print(f"[JBS]   Voxel grid: {max_voxel[0]}×{max_voxel[1]}×{max_voxel[2]}"
               f"  ({n_vox:,} voxels)")
 
-    voxel_count, voxel_leaves = _assign_leaves_fast(leaf_pos, voxel_size, max_voxel)
+    voxel_count, voxel_leaves = assign_leaves(leaf_pos, leaf_radius_max, voxel_size, max_voxel, exact_geometry)
 
     if verbose:
         occupied = int((voxel_count > 0).sum())
@@ -359,7 +360,8 @@ def build_scene_for_lai(
     LAI_eff_sp: np.ndarray, # (N_SPECIES,) target effective LAI per species
     P_LAI: float,
     band_params: dict,      # keys: rho, tau, rsoil
-    voxel_size: float = VOXEL_SIZE,
+    voxel_size: Optional[float] = None,
+    exact_geometry: bool = True,
     seed: int = 0,
     verbose: bool = False,
     nested_species: set = None,  # species indices using sorted (nested) selection
@@ -376,7 +378,7 @@ def build_scene_for_lai(
       leaf_sid     — (N_leaves,) int32 species index per leaf
       species_stats — same dict structure as load_jbs_scene_species
     """
-    from canopi.scene import Scene, _assign_leaves_fast
+    from canopi.scene import Scene, _assign_leaves_fast, scene_voxel_grid, assign_leaves
     import math
 
     rng  = np.random.default_rng(seed)
@@ -437,8 +439,8 @@ def build_scene_for_lai(
     n_leaf_norm = n_leaf / surf
 
     pos_max   = np.array([LX, LY, -H], dtype=np.float64)
-    max_voxel = np.maximum((np.abs(pos_max) / voxel_size).astype(int), 1)
-    voxel_count, voxel_leaves = _assign_leaves_fast(leaf_pos, voxel_size, max_voxel)
+    voxel_size, max_voxel = scene_voxel_grid(pos_max, voxel_size, exact_geometry, VOXEL_SIZE)
+    voxel_count, voxel_leaves = assign_leaves(leaf_pos, leaf_radius_max, voxel_size, max_voxel, exact_geometry)
 
     nz = np.clip(leaf_nrm[:, 2], -1.0, 1.0)
     scene = Scene(
@@ -488,7 +490,8 @@ def load_jbs_scene_groups(
     band:      str   = "O08",
     month:     str   = "Jul",
     P_LAI:     float = 0.5,
-    voxel_size: float = VOXEL_SIZE,
+    voxel_size: Optional[float] = None,
+    exact_geometry: bool = True,
     seed:      int   = 42,
     max_leaves: Optional[int] = None,
     verbose:   bool  = True,
@@ -507,7 +510,7 @@ def load_jbs_scene_groups(
         rho_sp_arr     — (18,) float64  per-group leaf rho
         species_list   — GROUP_LIST
     """
-    from canopi.scene import Scene, _assign_leaves_fast
+    from canopi.scene import Scene, _assign_leaves_fast, scene_voxel_grid, assign_leaves
 
     rng   = np.random.default_rng(seed)
     bp    = get_band_params(band)
@@ -548,7 +551,7 @@ def load_jbs_scene_groups(
         w_pos[:, 0] %= LX
         w_pos[:, 1] %= LY
         w_pos[:, 2]  = np.clip(w_pos[:, 2], 0.0, H)
-        w_pos[:, 2]  = -w_pos[:, 2]
+        w_pos[:, 2]  = w_pos[:, 2] - H  # height above soil -> z = h - H (soil at -H, sky at 0); was -h, which turned the stand upside down
 
         all_pos.append(w_pos)
         all_nrm.append(w_nrm)
@@ -559,7 +562,7 @@ def load_jbs_scene_groups(
         if len(loc_vtx) > 0:
             w_vtx, _ = _apply_tree_transform(loc_vtx, np.zeros_like(loc_vtx), inst)
             w_vtx[:, 0] %= LX; w_vtx[:, 1] %= LY
-            w_vtx[:, 2] = np.clip(w_vtx[:, 2], 0.0, H); w_vtx[:, 2] = -w_vtx[:, 2]
+            w_vtx[:, 2] = np.clip(w_vtx[:, 2], 0.0, H); w_vtx[:, 2] = w_vtx[:, 2] - H
             all_vtx.append(w_vtx)
             all_fcs.append(loc_fcs + vtx_offset)
             all_fsp.append(np.full(len(loc_fcs), inst.species, dtype=object))
@@ -606,8 +609,8 @@ def load_jbs_scene_groups(
 
     # ── Voxel grid ─────────────────────────────────────────────────────────
     pos_max   = np.array([LX, LY, -H], dtype=np.float64)
-    max_voxel = np.maximum((np.abs(pos_max) / voxel_size).astype(int), 1)
-    voxel_count, voxel_leaves = _assign_leaves_fast(leaf_pos, voxel_size, max_voxel)
+    voxel_size, max_voxel = scene_voxel_grid(pos_max, voxel_size, exact_geometry, VOXEL_SIZE)
+    voxel_count, voxel_leaves = assign_leaves(leaf_pos, leaf_rad, voxel_size, max_voxel, exact_geometry)
 
     # ── Scene ───────────────────────────────────────────────────────────────
     nz = np.clip(leaf_nrm[:, 2], -1.0, 1.0)

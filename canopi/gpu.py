@@ -2165,13 +2165,17 @@ if GPU_AVAILABLE:
         LAI_Max_sp,         # (_N_SP,)     float64  per-species
         n_leaf_norm_sp,     # (_N_SP,)     float64  per-species
         P_LAI_sp,           # (_N_SP,)     float64  per-species activation prob
-        rho_sp_arr,         # (_N_SP,)     float64  per-species leaf rho (= tau, symmetric)
+        rho_sp_arr,         # (_N_SP,)     float64  per-species leaf reflectance rho_s
+        tau_sp_arr,         # (_N_SP,)     float64  per-species leaf transmittance tau_s
         species_shadow,     # int  1: the shadow ray uses P_LAI_sp too
     ):
         """Backward tracer: BRF + per-species dBRF/dLAI + dBRF/drho.
         P_LAI_sp[s] controls the activation probability for species s leaves.
         Pass np.full(_N_SP, P_LAI) for the standard uniform-P case.
-        rho_sp_arr[s] is the leaf reflectance for species s; tau_s = rho_s (symmetric).
+        rho_sp_arr[s], tau_sp_arr[s]: leaf reflectance / transmittance of species s. The rho score
+        (K_sp) assumes tau_s / rho_s is held fixed when rho_s varies: every leaf factor (rho_s or
+        tau_s, at a bounce or at the sun connection) is then proportional to rho_s, and the
+        reflect/transmit choice rho_s/(rho_s+tau_s) does not depend on rho_s.
         species_shadow = 1 makes the sun-visibility test species-aware as well; 0 keeps
         the historical behaviour, where the shadow ray blocks on the scalar P_LAI."""
         n = cuda.grid(1)
@@ -2290,6 +2294,7 @@ if GPU_AVAILABLE:
             if hit:
 
                 li   = out_idx[0]
+                sp_li = leaf_species[li]     # species of THIS leaf (was set only when sunlit)
                 Hx   = out_Hx[0];  Hy = out_Hy[0];  Hz = out_Hz[0]
                 lnxl = leaf_nx[li];  lnyl = leaf_ny[li];  lnzl = leaf_nz[li]
                 cos_in = -(vx*lnxl + vy*lnyl + vz*lnzl)
@@ -2305,8 +2310,13 @@ if GPU_AVAILABLE:
                 n_H_now = n_H[0]
 
                 # ── 4. NEE toward sun ─────────────────────────────────────
+                # viewer side = sign(cos_in), sun side = sign(cos_out):
+                # same side -> reflection (rho_s), opposite sides -> transmission (tau_s)
                 cos_out  = nex*lnxl + ney*lnyl + nez*lnzl
-                f        = rho_sp_arr[leaf_species[li]] / 3.14159265  # rho=tau, same for reflect/transmit
+                if cos_in * cos_out > 0.0:
+                    f = rho_sp_arr[sp_li] / 3.14159265
+                else:
+                    f = tau_sp_arr[sp_li] / 3.14159265
                 norm_fac = math.fabs(cos_out) / cos_earth_sun
 
                 visible = _nee_deriv_sp(
@@ -2418,7 +2428,6 @@ if GPU_AVAILABLE:
                     # K_sp[s] counts scatters from species s BEFORE this bounce.
                     # The +1 for s==sp_li accounts for d(f)/drho_s at the current leaf
                     # (f = rho_sp_arr[sp_li]/pi; +1 because rho_s enters f directly).
-                    sp_li = leaf_species[li]
                     for s in range(_N_SP):
                         k_eff = nb.float64(K_sp[s])
                         if s == sp_li:
@@ -2442,7 +2451,7 @@ if GPU_AVAILABLE:
                 sx  = sr * math.cos(phi);  sy = sr * math.sin(phi)
                 sz  = math.sqrt(max(0.0, 1.0 - u1))
                 cif = vx*lnxl + vy*lnyl + vz*lnzl
-                if u3 < rho / (rho + tau):
+                if u3 < rho_sp_arr[sp_li] / (rho_sp_arr[sp_li] + tau_sp_arr[sp_li]):
                     nox = lnxl if cif < 0 else -lnxl
                     noy = lnyl if cif < 0 else -lnyl
                     noz = lnzl if cif < 0 else -lnzl
@@ -2456,7 +2465,7 @@ if GPU_AVAILABLE:
                 tl=math.sqrt(tx*tx+ty*ty+tz*tz); tx/=tl; ty/=tl; tz/=tl
                 bx=noy*tz-noz*ty; by=noz*tx-nox*tz; bz=nox*ty-noy*tx
                 vx=sx*tx+sy*bx+sz*nox; vy=sx*ty+sy*by+sz*noy; vz=sx*tz+sy*bz+sz*noz
-                energy *= 2.0 * rho_sp_arr[sp_li]   # rho_s + tau_s = 2*rho_s (symmetric)
+                energy *= rho_sp_arr[sp_li] + tau_sp_arr[sp_li]
                 K_sp[leaf_species[li]] += 1
                 Px=Hx; Py=Hy; Pz=Hz; origin=li; depth+=1
 
@@ -2605,6 +2614,10 @@ if GPU_AVAILABLE:
 
 def _upload_scene(scene):
     """Transfer read-only scene arrays to GPU.  Returns dict of device arrays."""
+    # Safety net: a grid that stops above the soil breaks rays leaving the soil (hot spot).
+    # Extends scene.max_voxel IN PLACE, so callers holding `mv = scene.max_voxel` see it.
+    from canopi.scene import ensure_soil_in_grid
+    ensure_soil_in_grid(scene)
     return dict(
         lpx = cuda.to_device(scene.leaf_pos[:,0].astype(np.float64)),
         lpy = cuda.to_device(scene.leaf_pos[:,1].astype(np.float64)),
@@ -3109,9 +3122,11 @@ def compute_deriv_bwd_gpu(scene, obs_dirs, vec_sun, N,
 def compute_deriv_bwd_species_gpu(scene, obs_dirs, vec_sun, N,
                                    leaf_species_id, species_stats,
                                    max_depth=99, threads_per_block=128,
-                                   seed=42):
+                                   seed=42, P_LAI_sp=None, rho_sp_arr=None,
+                                   tau_sp_arr=None, species_shadow=None):
     """
     Backward BRF + per-species dBRF/dLAI for multiple observation directions.
+    P_LAI_sp, rho_sp_arr, tau_sp_arr, species_shadow: as render_image_bwd_deriv_species_gpu.
 
     Returns
     -------
@@ -3139,6 +3154,18 @@ def compute_deriv_bwd_species_gpu(scene, obs_dirs, vec_sun, N,
     d_lsp    = cuda.to_device(leaf_species_id.astype(np.int32))
     d_lai_sp = cuda.to_device(species_stats['LAI_Max_sp'].astype(np.float64))
     d_nln_sp = cuda.to_device(species_stats['n_leaf_norm_sp'].astype(np.float64))
+    if P_LAI_sp is None:
+        P_LAI_sp = np.full(_N_SP, float(scene.P_LAI), dtype=np.float64)
+    if rho_sp_arr is None:
+        rho_sp_arr = np.full(_N_SP, float(scene.rho), dtype=np.float64)
+    rho_sp_arr = np.asarray(rho_sp_arr, dtype=np.float64)
+    if tau_sp_arr is None:
+        ratio = float(scene.tau) / float(scene.rho) if float(scene.rho) > 0 else 1.0
+        tau_sp_arr = rho_sp_arr * ratio
+    d_p_lai_sp = cuda.to_device(np.asarray(P_LAI_sp, dtype=np.float64))
+    d_rho_sp   = cuda.to_device(rho_sp_arr)
+    d_tau_sp   = cuda.to_device(np.asarray(tau_sp_arr, dtype=np.float64))
+    shadow     = int(bool(_SPECIES_SHADOW if species_shadow is None else species_shadow))
 
     lum_host  = np.zeros((N, n_obs),       dtype=np.float64)
     dfic_host = np.zeros((N, n_obs, N_SP), dtype=np.float64)
@@ -3152,6 +3179,7 @@ def compute_deriv_bwd_species_gpu(scene, obs_dirs, vec_sun, N,
         d_col  = cuda.to_device(np.zeros(N,        dtype=np.float64))
         d_dfic = cuda.to_device(np.zeros(N * N_SP, dtype=np.float64))
         d_dedg = cuda.to_device(np.zeros(N * N_SP, dtype=np.float64))
+        d_drho = cuda.to_device(np.zeros(N * N_SP, dtype=np.float64))
         rng_states = create_xoroshiro128p_states(N, seed=seed + io)
 
         _trace_bwd_deriv_species_kernel[blocks, threads_per_block](
@@ -3165,12 +3193,13 @@ def compute_deriv_bwd_species_gpu(scene, obs_dirs, vec_sun, N,
             int(max_depth), float(scene.pos_max[2]),
             int(seed), periodic_xy,
             d_sx, d_sy, rng_states,
-            d_col, d_dfic, d_dedg,
+            d_col, d_dfic, d_dedg, d_drho,
             float(scene.LAI_r),       float(scene.std_LAI),
             float(scene.LAI_Max),     float(scene.P_LAI),
             float(scene.n_leaf_norm), er,
             use_lognormal, sigma_ln,
             d_lsp, d_lai_sp, d_nln_sp,
+            d_p_lai_sp, d_rho_sp, d_tau_sp, shadow,
         )
         cuda.synchronize()
         lum_host[:, io]    = d_col.copy_to_host()
@@ -3178,9 +3207,9 @@ def compute_deriv_bwd_species_gpu(scene, obs_dirs, vec_sun, N,
         dfic_host[:, io, :] = tmp
         tmp = d_dedg.copy_to_host().reshape(N, N_SP)
         dedg_host[:, io, :] = tmp
-        del d_sx, d_sy, d_col, d_dfic, d_dedg, rng_states
+        del d_sx, d_sy, d_col, d_dfic, d_dedg, d_drho, rng_states
 
-    del g, d_lsp, d_lai_sp, d_nln_sp
+    del g, d_lsp, d_lai_sp, d_nln_sp, d_p_lai_sp, d_rho_sp, d_tau_sp
     gc.collect()
     cuda.current_context().deallocations.clear()
     return lum_host, dfic_host, dedg_host
@@ -3540,7 +3569,7 @@ def render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
                                         leaf_species_id, species_stats,
                                         img_H=64, img_W=64, N_spp=4,
                                         max_depth=99, threads_per_block=128, seed=42,
-                                        P_LAI_sp=None, rho_sp_arr=None,
+                                        P_LAI_sp=None, rho_sp_arr=None, tau_sp_arr=None,
                                         species_shadow=None,
                                         _scene_gpu=None, _rng_states=None):
     """
@@ -3608,9 +3637,17 @@ def render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
     if P_LAI_sp is None:
         P_LAI_sp = np.full(_N_SP, float(scene.P_LAI), dtype=np.float64)
     d_p_lai_sp   = cuda.to_device(np.asarray(P_LAI_sp, dtype=np.float64))
+    # Leaf optics per species.  Defaults: scene.rho / scene.tau for every species; if only
+    # rho_sp_arr is given, tau_s = rho_s * scene.tau / scene.rho (fixed ratio; = rho_s when the
+    # caller set scene.tau = scene.rho, the former symmetric behaviour).
     if rho_sp_arr is None:
         rho_sp_arr = np.full(_N_SP, float(scene.rho), dtype=np.float64)
-    d_rho_sp_arr = cuda.to_device(np.asarray(rho_sp_arr, dtype=np.float64))
+    rho_sp_arr = np.asarray(rho_sp_arr, dtype=np.float64)
+    if tau_sp_arr is None:
+        ratio = float(scene.tau) / float(scene.rho) if float(scene.rho) > 0 else 1.0
+        tau_sp_arr = rho_sp_arr * ratio
+    d_rho_sp_arr = cuda.to_device(rho_sp_arr)
+    d_tau_sp_arr = cuda.to_device(np.asarray(tau_sp_arr, dtype=np.float64))
     rng_states  = _rng_states if _rng_states is not None else \
                   create_xoroshiro128p_states(N_total, seed=seed)
 
@@ -3635,6 +3672,7 @@ def render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
         d_lsp, d_lai_sp, d_nln_sp,
         d_p_lai_sp,
         d_rho_sp_arr,
+        d_tau_sp_arr,
         int(bool(_SPECIES_SHADOW if species_shadow is None else species_shadow)),
     )
     cuda.synchronize()
@@ -3644,7 +3682,7 @@ def render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
     dedg_flat = d_dedg.copy_to_host().reshape(N_total, N_SP)
     drho_flat = d_drho.copy_to_host().reshape(N_total, N_SP)
 
-    del d_sx, d_sy, d_col, d_dfic, d_dedg, d_drho, d_lsp, d_lai_sp, d_nln_sp, d_p_lai_sp, d_rho_sp_arr, rng_states, g
+    del d_sx, d_sy, d_col, d_dfic, d_dedg, d_drho, d_lsp, d_lai_sp, d_nln_sp, d_p_lai_sp, d_rho_sp_arr, d_tau_sp_arr, rng_states, g
     gc.collect()
     cuda.current_context().deallocations.clear()
 

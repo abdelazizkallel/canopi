@@ -65,6 +65,7 @@ Usage (synthetic fallback, no RAMI files needed):
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import math
 import os
@@ -85,7 +86,7 @@ LY = 106.1535
 H  = 30.513          #: Canopy Zmax [m]
 LEAF_RADIUS = 0.05   #: Fallback disk radius when species not in SPECIES_LEAF_AREA_M2
 LAI_EFF     = 3.442  #: Total one-sided LAI (RAMI-5 doc); metadata sums to 2.914
-VOXEL_SIZE  = 1.0    #: 1 m voxels → 105 × 106 × 30 grid
+VOXEL_SIZE  = 1.0    #: target voxel size [m]; loaders default to periodic_voxel_size(LX, LY) ≈ 0.643 m (exact period)
 
 # One-sided leaf area per species [m²] from RAMI-5 HET09_JBS_SUM inventory.
 # Used to set per-leaf disk radii r = sqrt(area / π).
@@ -687,7 +688,8 @@ def load_jbs_scene(
     month: str = "Jul",
     P_LAI: float = 0.5,
     leaf_radius_std_mul: float = 0.5,
-    voxel_size: float = VOXEL_SIZE,
+    voxel_size: Optional[float] = None,
+    exact_geometry: bool = True,
     seed:  int = 42,
     max_leaves: Optional[int] = None,
     verbose: bool = True,
@@ -711,8 +713,13 @@ def load_jbs_scene(
         ``std_LAI = std_mul * LAI_r`` for the path-derivative model (matches
         ``SceneConfig.leaf_radius_std_mul``). Use ~0.001 for nearly deterministic
         leaf size; default 0.5.
-    voxel_size : float
-        DDA grid cell size [m]. Default 1.0 m.
+    voxel_size : float or None
+        DDA grid cell size [m]. None (default): with exact_geometry, the size closest to 1 m
+        whose grid period equals the stand (periodic_voxel_size: 0.6434 m, 164 x 165 cells);
+        otherwise 1.0 m.
+    exact_geometry : bool
+        True (default): periodic period = stand size and each leaf registered in every voxel
+        its disk overlaps. False reproduces v1.0 (1 m voxels, period 105 x 106 m, centre voxel).
     seed : int
         RNG seed.
     max_leaves : int or None
@@ -727,7 +734,7 @@ def load_jbs_scene(
     wood   : WoodMesh
         All wood triangles for the stand (for shadow / wood BRF computation).
     """
-    from canopi.scene import Scene, _assign_leaves_fast
+    from canopi.scene import Scene, _assign_leaves_fast, scene_voxel_grid, assign_leaves
 
     rng = np.random.default_rng(seed)
     bp  = get_band_params(band)
@@ -806,12 +813,11 @@ def load_jbs_scene(
         # Wrap x/y into periodic domain [0, LX) × [0, LY)
         w_pos[:, 0] %= LX
         w_pos[:, 1] %= LY
-        # Clamp z into [0, H]  (soil is z<0 in canopi → negate)
+        # Clamp height into [0, H], then shift to the canopi convention:
+        # z ∈ [−H, 0], sky at 0, soil at −H
         w_pos[:, 2] = np.clip(w_pos[:, 2], 0.0, H)
 
-        # Convert to canopi convention: z increases downward from sky
-        # canopi uses z ∈ [−H, 0], sky at 0, soil at −H
-        w_pos[:, 2] = -w_pos[:, 2]   # flip: world z=0(soil)→−H; z=H(sky)→0
+        w_pos[:, 2] = w_pos[:, 2] - H  # height above soil -> z = h - H (soil at -H, sky at 0); was -h, which turned the stand upside down
 
         all_pos.append(w_pos)
         all_nrm.append(w_nrm)
@@ -836,7 +842,7 @@ def load_jbs_scene(
             w_vtx[:, 0] %= LX
             w_vtx[:, 1] %= LY
             w_vtx[:, 2] = np.clip(w_vtx[:, 2], 0.0, H)
-            w_vtx[:, 2] = -w_vtx[:, 2]
+            w_vtx[:, 2] = w_vtx[:, 2] - H
 
             all_vtx.append(w_vtx)
             global_fcs = loc_fcs + vtx_offset
@@ -911,9 +917,7 @@ def load_jbs_scene(
 
     # ── 5. Voxel grid ──────────────────────────────────────────────────────
     pos_max  = np.array([LX, LY, -H], dtype=np.float64)
-    max_voxel = np.maximum(
-        (np.abs(pos_max) / voxel_size).astype(int), 1
-    )
+    voxel_size, max_voxel = scene_voxel_grid(pos_max, voxel_size, exact_geometry, VOXEL_SIZE)
     n_vox = int(max_voxel[0] * max_voxel[1] * max_voxel[2])
 
     if verbose:
@@ -921,7 +925,7 @@ def load_jbs_scene(
               f"  ({n_vox:,} voxels)")
 
     # Fast vectorised assignment (primary voxel only — valid since r=0.05 << 1.0 m)
-    voxel_count, voxel_leaves = _assign_leaves_fast(leaf_pos, voxel_size, max_voxel)
+    voxel_count, voxel_leaves = assign_leaves(leaf_pos, leaf_radius_max, voxel_size, max_voxel, exact_geometry)
 
     if verbose:
         occupied = int((voxel_count > 0).sum())

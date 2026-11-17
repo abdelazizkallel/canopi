@@ -95,6 +95,162 @@ class Scene:
         )
         self.leaf_radius[:] = np.sqrt(LAI_vals / np.pi)
 
+    def __setstate__(self, state):
+        # Scenes pickled before 2026-11-16 may have a voxel grid that stops above the soil.
+        self.__dict__.update(state)
+        ensure_soil_in_grid(self)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Voxel grid size
+# ─────────────────────────────────────────────────────────────────────────────
+
+def voxel_grid_dims(pos_max, voxel_size) -> np.ndarray:
+    """
+    Number of voxels per axis.
+
+    x, y: floor(L / voxel_size) (unchanged; the kernels use n * voxel_size as the periodic period).
+    z   : CEIL(H / voxel_size), so that the grid reaches the soil at z = -H.
+
+    Why z must reach the soil: the DDA clamps the ray start to the grid,
+    _Pz = max(Pz, -mvz*vs).  With floor, a scene of H = 30.513 m gets 30 layers and every
+    ray leaving the soil restarts 0.513 m higher at the SAME (x, y), off the sunlit path it
+    should retrace.  This broke the soil hot spot (JBS O08: hot-spot BRF 14 % low against
+    DART; with ceil, CANOPI 0.03961 = DART 0.03961).  Found 2026-11-16, DART comparison.
+    """
+    pos_max = np.asarray(pos_max, dtype=np.float64)
+    q = np.abs(pos_max) / voxel_size
+    n = np.maximum(q.astype(int), 1)
+    # x, y: when L is (within 1 %) a whole number of voxels, take that number, so that the
+    # periodic period n * voxel_size equals the scene size (see periodic_voxel_size).
+    for k in (0, 1):
+        if abs(q[k] - round(q[k])) < 0.01:
+            n[k] = max(int(round(q[k])), 1)
+    n[2] = max(int(np.ceil(abs(pos_max[2]) / voxel_size - 1e-9)), 1)
+    return n
+
+
+def periodic_voxel_size(lx: float, ly: float, target: float = 1.0, tol: float = 2e-3) -> float:
+    """
+    Voxel size close to `target` such that lx and ly are both (within tol m) whole numbers of
+    voxels, so the kernels' periodic period (n * voxel_size) equals the scene size.
+
+    The kernels wrap with Lx = mvx * vs. With vs = 1 m the JBS stand (105.5115 x 106.1535 m)
+    is wrapped with period 105 x 106 m and strips of 0.51 m and 0.15 m carry leaves twice.
+    For JBS this returns 0.643364 m (164 x 165 voxels = 105.5117 x 106.1551 m), which is also
+    the DART cell size that makes DART's scene (rounded UP to whole cells) match.
+    """
+    best = None
+    for nx in range(max(1, int(lx / (2 * target))), int(lx / (0.5 * target)) + 1):
+        vs = lx / nx
+        ny = round(ly / vs)
+        err = max(abs(nx * vs - lx), abs(ny * vs - ly))
+        # nudge vs up so that ceil(L / vs) == n for both axes (DART rounds up)
+        vs_up = max(lx / nx, ly / ny) * (1 + 1e-7)
+        err = max(abs(nx * vs_up - lx), abs(ny * vs_up - ly))
+        if err < tol and (best is None or abs(vs_up - target) < abs(best - target)):
+            best = vs_up
+    if best is None:
+        raise ValueError(f"no voxel size within {tol} m for {lx} x {ly}")
+    return best
+
+
+def _assign_leaves_bbox(leaf_pos, leaf_radius, voxel_size, max_voxel) -> tuple:
+    """
+    Vectorised assignment of each leaf to EVERY voxel its disk can overlap (the voxels touched by
+    the cube centre +- r; at most 8). The primary-voxel assignment (_assign_leaves_fast) misses
+    the part of a disk that sticks into a neighbouring voxel: a ray through that voxel only does
+    not see the leaf. Periodic wrap in x, y; clipped in z.
+    """
+    mv = np.asarray(max_voxel, dtype=np.int64)
+    N = len(leaf_pos)
+    ap = np.abs(leaf_pos)
+    r = np.asarray(leaf_radius, dtype=np.float64)[:, None]
+    lo = np.floor((ap - r) / voxel_size).astype(np.int64)
+    hi = np.floor((ap + r) / voxel_size).astype(np.int64)
+    ids, cells = [], []
+    for dx in (0, 1):
+        for dy in (0, 1):
+            for dz in (0, 1):
+                c = np.stack([np.where(dx, hi[:, 0], lo[:, 0]), np.where(dy, hi[:, 1], lo[:, 1]),
+                              np.where(dz, hi[:, 2], lo[:, 2])], 1)
+                c[:, 0] %= mv[0]; c[:, 1] %= mv[1]
+                c[:, 2] = np.clip(c[:, 2], 0, mv[2] - 1)
+                ids.append(np.arange(N)); cells.append(c[:, 0] + c[:, 1] * mv[0] + c[:, 2] * mv[0] * mv[1])
+    ids = np.concatenate(ids); cells = np.concatenate(cells)
+    key = np.unique(cells * N + ids)                       # drop duplicates (leaf, voxel)
+    cells, ids = key // N, key % N
+    n_vox = int(np.prod(mv))
+    voxel_count = np.bincount(cells, minlength=n_vox).astype(np.int32)
+    cap = max(int(voxel_count.max()) + 4, 8)
+    cum = np.concatenate([[0], np.cumsum(voxel_count)])
+    local = np.arange(len(cells)) - cum[cells]
+    voxel_leaves = np.zeros((n_vox, cap), dtype=np.int32)
+    voxel_leaves[cells, local] = ids
+    return voxel_count, voxel_leaves
+
+
+def ensure_soil_in_grid(scene, verbose: bool = True) -> bool:
+    """
+    Extend a scene whose voxel grid stops above the soil (built before the voxel_grid_dims fix)
+    and re-assign its leaves. Edits scene.max_voxel IN PLACE (callers may hold a reference).
+    Returns True if the scene was changed.
+    """
+    mv = getattr(scene, "max_voxel", None)
+    if mv is None or getattr(scene, "voxel_count", None) is None:
+        return False
+    vs = float(scene.voxel_size)
+    nz = int(voxel_grid_dims(scene.pos_max, vs)[2])
+    if int(mv[2]) >= nz:
+        return False
+    old = int(mv[2])
+    new_mv = np.array([int(mv[0]), int(mv[1]), nz], dtype=np.int64)
+    rim = int(np.sum(scene.voxel_count)) > len(scene.leaf_pos)   # rim-assigned scene
+    if rim:
+        n_vox = int(np.prod(new_mv))
+        vc = np.zeros(n_vox, dtype=np.int32)
+        vl = np.zeros((n_vox, scene.voxel_leaves.shape[1]), dtype=np.int32)
+        _assign_all_leaves(scene.leaf_pos, scene.leaf_radius, scene.leaf_normal, vs, new_mv,
+                           vc, vl, leaf_radius_max=getattr(scene, "leaf_radius_max", None))
+    else:
+        vc, vl = _assign_leaves_fast(scene.leaf_pos, vs, new_mv)
+    try:
+        mv[2] = nz                       # in place
+    except (TypeError, ValueError):
+        scene.max_voxel = new_mv
+    scene.voxel_count, scene.voxel_leaves = vc, vl
+    if getattr(scene, "voxel_lai_mean", None) is not None:
+        scene.voxel_lai_mean = scene.voxel_lai_std = None     # per-voxel stats no longer match
+    if verbose:
+        print(f"[scene] voxel grid extended to the soil: {old} -> {nz} z-layers "
+              f"(H = {abs(float(scene.pos_max[2])):.3f} m), leaves re-assigned")
+    return True
+
+
+
+
+
+def scene_voxel_grid(pos_max, voxel_size=None, exact_geometry=True, default=1.0):
+    """
+    Voxel size and grid of a stand. voxel_size=None: with exact_geometry, the size closest to
+    `default` whose grid period equals the scene (periodic_voxel_size); else `default`.
+    Returns (voxel_size, max_voxel).
+    """
+    if voxel_size is None:
+        voxel_size = default
+        if exact_geometry:
+            try:
+                voxel_size = periodic_voxel_size(abs(float(pos_max[0])), abs(float(pos_max[1])), target=default)
+            except ValueError:
+                pass
+    return float(voxel_size), voxel_grid_dims(pos_max, voxel_size)
+
+
+def assign_leaves(leaf_pos, leaf_radius_max, voxel_size, max_voxel, exact_geometry=True):
+    """Voxel lists: every voxel a disk overlaps (exact_geometry) or the centre voxel only (v1.0)."""
+    if exact_geometry:
+        return _assign_leaves_bbox(leaf_pos, leaf_radius_max, voxel_size, max_voxel)
+    return _assign_leaves_fast(leaf_pos, voxel_size, max_voxel)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main scene builder
@@ -167,9 +323,7 @@ def build_scene(cfg: SceneConfig, rng: np.random.Generator) -> Scene:
 
     # ── Voxel acceleration grid ───────────────────────────────────────────────
     voxel_size = cfg.voxel_size
-    max_voxel  = np.maximum(
-        (np.abs(pos_max) / voxel_size).astype(int), 1
-    )
+    max_voxel  = voxel_grid_dims(pos_max, voxel_size)   # z reaches the soil
     n_vox = int(max_voxel[0] * max_voxel[1] * max_voxel[2])
 
     # capacity: average leaves per voxel × safety factor

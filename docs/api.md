@@ -73,7 +73,8 @@ render_image_bwd_deriv_species_gpu(scene, obs_dir, vec_sun,
                                    leaf_species_id, species_stats,
                                    img_H=64, img_W=64, N_spp=4,
                                    max_depth=99, threads_per_block=128, seed=42,
-                                   P_LAI_sp=None, rho_sp_arr=None,
+                                   P_LAI_sp=None, rho_sp_arr=None, tau_sp_arr=None,
+                                   species_shadow=None,
                                    _scene_gpu=None, _rng_states=None)
 
 upload_scene_gpu(scene, leaf_species_id=None, species_stats=None)
@@ -92,6 +93,10 @@ Two optional arguments carry the retrieval parameters:
   existing calls are unchanged. **Vary this, not the scene, when you change LAI** (see
   [model.md §4](model.md)).
 - `rho_sp_arr` — per-species leaf reflectance, enabling the `drho` output.
+- `tau_sp_arr` — per-species leaf transmittance (rho != tau allowed). Default: `rho_sp_arr` times
+  `scene.tau / scene.rho`. `drho` is the derivative with tau_s / rho_s held fixed.
+- `species_shadow` — the sun-visibility ray also reads `P_LAI_sp` (needed for per-species
+  retrievals; see [model.md §4](model.md)).
 
 Pass `_scene_gpu` and `_rng_states` (from `upload_scene_gpu` and `create_rng_states`) across
 iterations of a retrieval loop to avoid re-uploading 2.5 M leaves every render.
@@ -106,7 +111,7 @@ Module constants: `LX = 105.5115`, `LY = 106.1535`, `H = 30.513` (metres), `LAI_
 
 ```python
 load_jbs_scene(scene_dir, band='PUR', month='Jul', P_LAI=0.5,
-               leaf_radius_std_mul=0.5, voxel_size=1.0, seed=42,
+               leaf_radius_std_mul=0.5, voxel_size=None, exact_geometry=True, seed=42,
                max_leaves=None, verbose=True) -> (scene, wood)
 get_band_params(band) -> dict          # rho, tau, rsoil for a RAMI band
 parse_treelocations(path) -> np.ndarray
@@ -123,16 +128,24 @@ Per-species / per-group version. Constants: `SPECIES_LIST`
 
 ```python
 load_jbs_scene_species(scene_dir, band='PUR', month='Jul', P_LAI=0.5,
-                       leaf_radius_std_mul=0.5, voxel_size=1.0, seed=42,
-                       max_leaves=None, verbose=True, return_pools=False)
+                       leaf_radius_std_mul=0.5, voxel_size=None, exact_geometry=True,
+                       seed=42, max_leaves=None, verbose=True, return_pools=False)
 
 load_jbs_scene_groups(scene_dir, band='O08', month='Jul', P_LAI=0.5,
-                      voxel_size=1.0, seed=42, max_leaves=None, verbose=True)
+                      voxel_size=None, exact_geometry=True, seed=42, max_leaves=None,
+                      verbose=True)
     -> (scene, wood, leaf_group_id, group_stats)
 
 build_scene_for_lai(leaf_pools, LAI_eff_sp, P_LAI, band_params,
-                    voxel_size=1.0, seed=0, verbose=False, nested_species=None)
+                    voxel_size=None, exact_geometry=True, seed=0, verbose=False,
+                    nested_species=None)
 ```
+
+**Voxel grid (all scene builders).** `voxel_size=None` with `exact_geometry=True` (default) picks
+the voxel size closest to 1 m whose grid period equals the stand (`canopi.scene.periodic_voxel_size`;
+0.6434 m, 164 x 165 cells for JBS) and registers each leaf in every voxel its disk overlaps
+(`_assign_leaves_bbox`). The vertical grid always reaches the soil (`voxel_grid_dims`).
+`exact_geometry=False, voxel_size=1.0` reproduces v1.0 (period 105 x 106 m, centre voxel only).
 
 `group_stats` holds `LAI_Max_sp` (per-group LAI including fictive leaves), `n_leaf_norm_sp`,
 `rho_sp_arr` and `species_list` — `LAI_Max_sp` is what converts a derivative with respect to

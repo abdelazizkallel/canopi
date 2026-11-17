@@ -24,7 +24,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from canopi.scene import Scene, _assign_leaves_fast
+from canopi.scene import Scene, _assign_leaves_fast, scene_voxel_grid, assign_leaves
 
 # ── published scene ─────────────────────────────────────────────────────────
 LX, LY, H = 100.0, 100.0, 40.0
@@ -98,7 +98,8 @@ def load_sphere_scene(
     leaf_radius: float = LEAF_RADIUS,
     scene_xy: float = LX,
     height: float = H,
-    voxel_size: float = VOXEL_SIZE,
+    voxel_size: Optional[float] = None,
+    exact_geometry: bool = True,
     P_LAI: float = 0.5,
     leaf_radius_std_mul: float = 0.0,
     rho: float = BAND["rho"],
@@ -186,8 +187,8 @@ def load_sphere_scene(
         n_leaf, math.sqrt(max(LAI_r + 2.5 * std_LAI, 0.0) / math.pi))
 
     pos_max = np.array([scene_xy, scene_xy, -height], dtype=np.float64)
-    max_voxel = np.maximum((np.abs(pos_max) / voxel_size).astype(int), 1)
-    voxel_count, voxel_leaves = _assign_leaves_fast(leaf_pos, voxel_size, max_voxel)
+    voxel_size, max_voxel = scene_voxel_grid(pos_max, voxel_size, exact_geometry, VOXEL_SIZE)
+    voxel_count, voxel_leaves = assign_leaves(leaf_pos, r_max, voxel_size, max_voxel, exact_geometry)
 
     nz = np.clip(leaf_nrm[:, 2], -1.0, 1.0)
     scene = Scene(
